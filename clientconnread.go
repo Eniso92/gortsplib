@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync/atomic"
 	"time"
+	"reflect"
 
 	"github.com/aler9/gortsplib/pkg/base"
 )
@@ -79,7 +80,7 @@ func (c *ClientConn) backgroundPlayUDP(done chan error) {
 	reportTicker := time.NewTicker(clientReceiverReportPeriod)
 	defer reportTicker.Stop()
 
-	keepaliveTicker := time.NewTicker(clientUDPKeepalivePeriod)
+	keepaliveTicker := time.NewTicker(clientKeepalivePeriod)
 	defer keepaliveTicker.Stop()
 
 	checkStreamTicker := time.NewTicker(clientUDPCheckStreamPeriod)
@@ -156,20 +157,37 @@ func (c *ClientConn) backgroundPlayTCP(done chan error) {
 			frame := base.InterleavedFrame{
 				Content: c.tcpFrameBuffer.Next(),
 			}
-			err := frame.Read(c.br)
+			res := base.Response{}
+			what, err := base.ReadInterleavedFrameOrResponse(&frame, &res, c.br)
 			if err != nil {
 				readerDone <- err
 				return
 			}
 
-			c.rtcpReceivers[frame.TrackID].ProcessFrame(time.Now(), frame.StreamType, frame.Content)
+			switch what.(type) {
+			case *base.InterleavedFrame:
+				c.rtcpReceivers[frame.TrackID].ProcessFrame(time.Now(), frame.StreamType, frame.Content)
+				c.readCB(frame.TrackID, frame.StreamType, frame.Content)
 
-			c.readCB(frame.TrackID, frame.StreamType, frame.Content)
+			case *base.Response:
+				// fmt.Printf("%v", res)
+
+			default:
+				if what == nil {
+					fmt.Printf("Unsupported type: nil\n")
+				} else {
+					val := reflect.ValueOf(what)
+					fmt.Printf("Unsupported type: %v\n", reflect.Indirect(val).Type())
+				}
+			}
 		}
 	}()
 
 	reportTicker := time.NewTicker(clientReceiverReportPeriod)
 	defer reportTicker.Stop()
+
+	keepaliveTicker := time.NewTicker(clientKeepalivePeriod)
+	defer keepaliveTicker.Stop()
 
 	// for some reason, SetReadDeadline() must always be called in the same
 	// goroutine, otherwise Read() freezes.
@@ -199,6 +217,26 @@ func (c *ClientConn) backgroundPlayTCP(done chan error) {
 					Content:    r,
 				}
 				frame.Write(c.bw)
+			}
+
+		case <-keepaliveTicker.C:
+			_, err := c.Do(&base.Request{
+				Method: func() base.Method {
+					// the vlc integrated rtsp server requires GET_PARAMETER
+					if c.getParameterSupported {
+						return base.GetParameter
+					}
+					return base.Options
+				}(),
+				// use the stream path, otherwise some cameras do not reply
+				URL:          c.streamURL,
+				SkipResponse: true,
+			})
+			if err != nil {
+				c.nconn.SetReadDeadline(time.Now())
+				<-readerDone
+				returnError = err
+				return
 			}
 
 		case err := <-readerDone:

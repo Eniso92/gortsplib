@@ -31,7 +31,7 @@ const (
 	clientReceiverReportPeriod   = 10 * time.Second
 	clientSenderReportPeriod     = 10 * time.Second
 	clientUDPCheckStreamPeriod   = 5 * time.Second
-	clientUDPKeepalivePeriod     = 30 * time.Second
+	clientKeepalivePeriod        = 10 * time.Second
 	clientTCPFrameReadBufferSize = 128 * 1024
 )
 
